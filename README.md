@@ -1,0 +1,1 @@
+# gateway_property_data
