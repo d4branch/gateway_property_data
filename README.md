@@ -1,1 +1,1 @@
-# gateway_property_data
+# gateway_travel_data
