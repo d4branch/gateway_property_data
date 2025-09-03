@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Conference Travel Estimator</title>
+<style>
+  :root { --bg:#0b0d12; --card:#121621; --muted:#8ea0b3; --accent:#4db5ff; --line:#1f2634; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background:var(--bg); color:#e8eef6; }
+  header { padding:18px 20px; border-bottom:1px solid var(--line); position:sticky; top:0; background:linear-gradient(180deg,rgba(11,13,18,.95),rgba(11,13,18,.75)); backdrop-filter: blur(6px); }
+  h1 { margin:0 0 4px 0; font-size:20px; }
+  .wrap { max-width:1100px; margin:18px auto; padding:0 16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; margin-bottom:14px; }
+  label { font-size:12px; color:var(--muted); display:block; margin-bottom:6px; }
+  input[type="text"],input[type="number"],input[type="file"]{ width:100%; background:#0e1320; color:#e8eef6; border:1px solid var(--line); border-radius:8px; padding:8px 10px; }
+  .row{ display:grid; grid-template-columns:1fr; gap:12px; }
+  @media (min-width: 900px){ .row{ grid-template-columns:1fr 1fr; } }
+  .btn{ background:#0e1320; color:#e8eef6; border:1px solid var(--line); border-radius:8px; padding:8px 10px; cursor:pointer; }
+  .btn.primary{ background:var(--accent); color:#001222; border-color:#3aa5f3; }
+  .btn.small{ font-size:12px; padding:6px 8px; }
+  .grid-2{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .summary{ display:flex; align-items:center; justify-content:space-between; }
+  .big{ font-size:22px; font-weight:700; }
+  table{ width:100%; border-collapse:collapse; font-size:13px; }
+  th, td{ padding:10px 8px; border-bottom:1px solid var(--line); text-align:left; }
+  thead th{ font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.02em; }
+  .muted{ color:var(--muted); }
+  .controls{ display:grid; grid-template-columns:repeat(4,1fr); gap:12px; }
+  @media (max-width: 900px){ .controls{ grid-template-columns:1fr 1fr; } }
+  .pill{ display:inline-flex; align-items:center; gap:6px; font-size:12px; padding:4px 8px; border:1px solid var(--line); border-radius:999px; }
+  .note{ font-size:12px; color:var(--muted); }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Conference Travel Estimator (no build tools)</h1>
+    <div class="muted">Compare total mileage cost for Huntsville, AL vs Atlanta, GA. Toggle include/fly per site; load JSON from URL or file.</div>
+  </header>
+
+  <div class="wrap">
+    <div class="card">
+      <div class="row">
+        <div>
+          <label>Load JSON from URL (same-origin Pages path recommended)</label>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <input id="urlInput" type="text" placeholder="https://d4branch.github.io/gateway_travel_data/properties.json" />
+            <button class="btn" id="btnLoad">Load</button>
+          </div>
+          <div class="note">Required fields per record: <code>lat</code>, <code>lon</code>, and a name (<code>name</code> or <code>Title</code>). Optional: <code>city</code>, <code>state</code>, <code>rvp</code>, <code>manager</code>.</div>
+        </div>
+        <div>
+          <label>…or upload JSON file</label>
+          <input id="fileInput" type="file" accept="application/json" />
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="controls">
+        <div>
+          <label>Mileage rate ($/mile)</label>
+          <input type="number" id="rate" step="0.01" value="0.70"/>
+        </div>
+        <div>
+          <label>Road factor (vs straight-line)</label>
+          <input type="number" id="road" step="0.01" value="1.18"/>
+          <div class="note">Tip: 1.15–1.25 is typical.</div>
+        </div>
+        <div>
+          <label>Distance cap (one-way miles, 0 = none)</label>
+          <input type="number" id="cap" step="10" value="0"/>
+        </div>
+        <div>
+          <label>Options</label>
+          <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+            <label class="pill"><input type="checkbox" id="round" checked> Round-trip</label>
+            <button class="btn small" id="btnAllOn">Include all</button>
+            <button class="btn small" id="btnAllOff">Exclude all</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="card" id="sumATL">
+        <div class="summary">
+          <div>
+            <div class="muted">Total – Atlanta, GA</div>
+            <div class="big" id="atlMiles">0 mi</div>
+          </div>
+          <div style="text-align:right;">
+            <div class="big" id="atlCost">$0</div>
+            <button class="btn small" id="exportATL">Export CSV</button>
+          </div>
+        </div>
+        <div class="note" id="atlMeta">0 sites · 0 marked fly</div>
+      </div>
+
+      <div class="card" id="sumHSV">
+        <div class="summary">
+          <div>
+            <div class="muted">Total – Huntsville, AL</div>
+            <div class="big" id="hsvMiles">0 mi</div>
+          </div>
+          <div style="text-align:right;">
+            <div class="big" id="hsvCost">$0</div>
+            <button class="btn small" id="exportHSV">Export CSV</button>
+          </div>
+        </div>
+        <div class="note" id="hsvMeta">0 sites · 0 marked fly</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div style="display:flex; gap:8px; align-items:center; margin-bottom:10px;">
+        <span class="muted">Filter:</span>
+        <input id="filter" type="text" placeholder="name / city / state / RVP / manager" />
+        <button class="btn small" id="markFarATL">Far→Fly (ATL > 300 mi)</button>
+        <button class="btn small" id="markFarHSV">Far→Fly (HSV > 300 mi)</button>
+      </div>
+      <div style="overflow:auto;">
+        <table>
+          <thead>
+            <tr>
+              <th>Include</th>
+              <th>Fly</th>
+              <th>Property</th>
+              <th>City/State</th>
+              <th>RVP</th>
+              <th>Manager</th>
+              <th>ATL mi / $</th>
+              <th>HSV mi / $</th>
+            </tr>
+          </thead>
+          <tbody id="tbody"></tbody>
+        </table>
+      </div>
+      <div class="note" id="empty">Load your properties JSON to begin.</div>
+    </div>
+
+    <div class="note">Numbers are estimates using great‑circle distance × road factor. Host this file and your JSON on GitHub Pages (same repo) to avoid CORS hassles.</div>
+  </div>
+
+<script>
+const DEST_ATL = { lat:33.7490, lon:-84.3880 };
+const DEST_HSV = { lat:34.7304, lon:-86.5861 };
+
+let records = []; // normalized
+let state = {};   // id -> {included:true, fly:false}
+
+function toRad(v){ return v * Math.PI / 180; }
+function haversineKm(a,b,c,d){
+  const R=6371, dLat=toRad(c-a), dLon=toRad(d-b);
+  const A=Math.sin(dLat/2)**2 + Math.cos(toRad(a))*Math.cos(toRad(c))*Math.sin(dLon/2)**2;
+  return 2*R*Math.atan2(Math.sqrt(A),Math.sqrt(1-A));
+}
+function miles(rec, dest, road){
+  if(!isFinite(rec.lat)||!isFinite(rec.lon)) return NaN;
+  return haversineKm(rec.lat, rec.lon, dest.lat, dest.lon) * 0.621371 * road;
+}
+function norm(rec, idx){
+  const id = rec.id ?? rec.ID ?? rec.pk ?? rec.Title ?? String(idx+1);
+  const name = rec.name ?? rec.Name ?? rec.property ?? rec.Property ?? rec.Title ?? `Site ${idx+1}`;
+  const lat = Number(rec.lat ?? rec.latitude ?? rec.Latitude);
+  const lon = Number(rec.lon ?? rec.lng ?? rec.long ?? rec.longitude ?? rec.Longitude);
+  return { id, name, lat, lon,
+    city: rec.city ?? rec.City ?? "",
+    state: rec.state ?? rec.State ?? "",
+    rvp: rec.rvp ?? rec.RVP ?? "",
+    manager: rec.manager ?? rec.Manager ?? "",
+    raw: rec };
+}
+
+function render(){
+  const rate = Number(document.getElementById('rate').value)||0;
+  const road = Number(document.getElementById('road').value)||1.18;
+  const cap  = Number(document.getElementById('cap').value)||0;
+  const round = document.getElementById('round').checked;
+  const q = document.getElementById('filter').value.trim().toLowerCase();
+
+  const tbody = document.getElementById('tbody');
+  tbody.innerHTML = '';
+
+  let totalsATL = { miles:0, cost:0, sites:0, flyers:0 };
+  let totalsHSV = { miles:0, cost:0, sites:0, flyers:0 };
+
+  const shown = records.filter(r => !q ||
+    r.name.toLowerCase().includes(q) ||
+    (r.city||'').toLowerCase().includes(q) ||
+    (r.state||'').toLowerCase().includes(q) ||
+    (r.rvp||'').toLowerCase().includes(q) ||
+    (r.manager||'').toLowerCase().includes(q)
+  );
+
+  for(const r of shown){
+    const st = state[r.id] ?? (state[r.id] = {included:true, fly:false});
+    let mA = miles(r, DEST_ATL, road);
+    let mH = miles(r, DEST_HSV, road);
+    let tA = round ? mA*2 : mA;
+    let tH = round ? mH*2 : mH;
+    let cA = (isFinite(tA)? tA*rate:0);
+    let cH = (isFinite(tH)? tH*rate:0);
+
+    if(st.included){
+      totalsATL.sites++; totalsHSV.sites++;
+      if(st.fly || (cap>0 && isFinite(mA) && mA>cap)) { totalsATL.flyers++; cA=0; tA=0; }
+      if(st.fly || (cap>0 && isFinite(mH) && mH>cap)) { totalsHSV.flyers++; cH=0; tH=0; }
+      totalsATL.miles += isFinite(tA)? tA:0; totalsATL.cost += cA;
+      totalsHSV.miles += isFinite(tH)? tH:0; totalsHSV.cost += cH;
+    }
+
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><input type="checkbox" ${st.included? 'checked':''} data-act="inc" data-id="${r.id}"></td>
+      <td><input type="checkbox" ${st.fly? 'checked':''} data-act="fly" data-id="${r.id}"></td>
+      <td><strong>${escapeHtml(r.name)}</strong></td>
+      <td>${escapeHtml([r.city,r.state].filter(Boolean).join(', '))}</td>
+      <td>${escapeHtml(r.rvp||'')}</td>
+      <td>${escapeHtml(r.manager||'')}</td>
+      <td>${isFinite(tA)? `${tA.toFixed(0)} mi / $${(cA).toFixed(0)}`:'—'}</td>
+      <td>${isFinite(tH)? `${tH.toFixed(0)} mi / $${(cH).toFixed(0)}`:'—'}</td>`;
+    tbody.appendChild(tr);
+  }
+
+  byId('atlMiles').textContent = fmtMi(totalsATL.miles);
+  byId('atlCost').textContent  = fmt$(totalsATL.cost);
+  byId('hsvMiles').textContent = fmtMi(totalsHSV.miles);
+  byId('hsvCost').textContent  = fmt$(totalsHSV.cost);
+  byId('atlMeta').textContent  = `${totalsATL.sites} sites · ${totalsATL.flyers} marked fly`;
+  byId('hsvMeta').textContent  = `${totalsHSV.sites} sites · ${totalsHSV.flyers} marked fly`;
+  byId('empty').style.display = records.length? 'none':'block';
+}
+
+function byId(id){ return document.getElementById(id); }
+function fmtMi(v){ return `${Math.round(v).toLocaleString()} mi`; }
+function fmt$(v){ return `$${Math.round(v).toLocaleString()}`; }
+function escapeHtml(s){ return String(s).replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+// Events
+byId('btnLoad').onclick = async () => {
+  const url = byId('urlInput').value.trim();
+  if(!url) return;
+  try{
+    const r = await fetch(url, { cache:'no-store' });
+    const data = await r.json();
+    const arr = Array.isArray(data) ? data : (data.records||[]);
+    records = arr.map(norm);
+    state = {}; // reset toggles when loading new data
+    render();
+  }catch(e){ alert('Failed to load JSON. Check the URL and CORS.'); }
+};
+
+byId('fileInput').onchange = (e) => {
+  const f = e.target.files && e.target.files[0];
+  if(!f) return;
+  const fr = new FileReader();
+  fr.onload = () => {
+    try{
+      const data = JSON.parse(String(fr.result));
+      const arr = Array.isArray(data) ? data : (data.records||[]);
+      records = arr.map(norm);
+      state = {};
+      render();
+    }catch{ alert('Invalid JSON file. Expect an array or {records:[...]}.'); }
+  };
+  fr.readAsText(f);
+};
+
+['rate','road','cap','round','filter'].forEach(id=>{
+  byId(id).addEventListener('input', render);
+  byId(id).addEventListener('change', render);
+});
+
+byId('tbody').addEventListener('change', (e)=>{
+  const t = e.target; if(!t || !t.dataset) return;
+  const id = t.dataset.id; const act = t.dataset.act; if(!id||!act) return;
+  const st = state[id] ?? (state[id]={included:true, fly:false});
+  if(act==='inc') st.included = t.checked; else if(act==='fly') st.fly = t.checked;
+  render();
+});
+
+byId('btnAllOn').onclick = ()=>{ for(const r of records){ (state[r.id]??(state[r.id]={included:true,fly:false})).included=true; } render(); };
+byId('btnAllOff').onclick = ()=>{ for(const r of records){ (state[r.id]??(state[r.id]={included:true,fly:false})).included=false; } render(); };
+
+byId('markFarATL').onclick = ()=> markFar(300, DEST_ATL);
+byId('markFarHSV').onclick = ()=> markFar(300, DEST_HSV);
+
+function markFar(threshold, dest){
+  const road = Number(byId('road').value)||1.18;
+  for(const r of records){
+    const m = miles(r, dest, road);
+    if(isFinite(m) && m>threshold){ (state[r.id]??(state[r.id]={included:true,fly:false})).fly = true; }
+  }
+  render();
+}
+
+byId('exportATL').onclick = ()=> exportCsv(DEST_ATL, 'Atlanta');
+byId('exportHSV').onclick = ()=> exportCsv(DEST_HSV, 'Huntsville');
+
+function exportCsv(dest, label){
+  const rate = Number(byId('rate').value)||0; const road=Number(byId('road').value)||1.18; const cap=Number(byId('cap').value)||0; const round=byId('round').checked;
+  const header = ['id','name','rvp','manager','city','state','included','fly','miles','cost'];
+  const lines=[header.join(',')];
+  for(const r of records){
+    const st = state[r.id]??{included:true, fly:false};
+    let m = miles(r, dest, road);
+    let trip = round ? m*2 : m; let cost = (isFinite(trip)? trip*rate:0);
+    if(!st.included || st.fly || (cap>0 && isFinite(m) && m>cap)){ trip=0; cost=0; }
+    lines.push([
+      JSON.stringify(r.id), JSON.stringify(r.name), JSON.stringify(r.rvp||''), JSON.stringify(r.manager||''),
+      JSON.stringify(r.city||''), JSON.stringify(r.state||''), st.included?1:0, st.fly?1:0,
+      (isFinite(trip)? trip.toFixed(1):'0'), cost.toFixed(2)
+    ].join(','));
+  }
+  const blob = new Blob([lines.join('\n')], {type:'text/csv'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href=url; a.download=`travel-estimate-${label.toLowerCase()}.csv`; a.click();
+  URL.revokeObjectURL(url);
+}
+
+render();
+</script>
+</body>
+</html>
