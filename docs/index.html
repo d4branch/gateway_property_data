@@ -34,8 +34,8 @@
 </head>
 <body>
   <header>
-    <h1>Conference Travel Estimator (no build tools)</h1>
-    <div class="muted">Compare total mileage cost for Huntsville, AL vs Atlanta, GA. Toggle include/fly per site; load JSON from URL or file.</div>
+    <h1>Conference Travel Estimator</h1>
+    <div class="muted">Compare total mileage cost for Huntsville, AL vs Atlanta, GA. Toggle include/fly per site</div>
   </header>
 
   <div class="wrap">
@@ -44,7 +44,7 @@
         <div>
           <label>Load JSON from URL (same-origin Pages path recommended)</label>
           <div style="display:flex; gap:8px; align-items:center;">
-            <input id="urlInput" type="text" placeholder="https://d4branch.github.io/gateway_travel_data/properties.json" />
+            <input id="urlInput" type="text" value="https://d4branch.github.io/gateway_travel_data/properties.json" />
             <button class="btn" id="btnLoad">Load</button>
           </div>
           <div class="note">Required fields per record: <code>lat</code>, <code>lon</code>, and a name (<code>name</code> or <code>Title</code>). Optional: <code>city</code>, <code>state</code>, <code>rvp</code>, <code>manager</code>.</div>
