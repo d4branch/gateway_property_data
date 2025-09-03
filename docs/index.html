@@ -35,7 +35,7 @@
 <body>
   <header>
     <h1>Conference Travel Estimator</h1>
-    <div class="muted">Compare total mileage cost for Huntsville, AL vs Atlanta, GA. Toggle include/fly per site</div>
+    <div class="muted">Compare total mileage cost for Huntsville, AL vs Atlanta, GA. Toggle include/fly per site; load JSON from URL or file.</div>
   </header>
 
   <div class="wrap">
@@ -139,7 +139,7 @@
       <div class="note" id="empty">Load your properties JSON to begin.</div>
     </div>
 
-    <div class="note">Numbers are estimates using great‑circle distance × road factor. Host this file and your JSON on GitHub Pages (same repo) to avoid CORS hassles.</div>
+    <div class="note">Numbers are estimates using great‑circle distance × road factor.</div>
   </div>
 
 <script>
@@ -237,7 +237,7 @@ function fmtMi(v){ return `${Math.round(v).toLocaleString()} mi`; }
 function fmt$(v){ return `$${Math.round(v).toLocaleString()}`; }
 function escapeHtml(s){ return String(s).replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 
-// Events
+// Load button
 byId('btnLoad').onclick = async () => {
   const url = byId('urlInput').value.trim();
   if(!url) return;
@@ -251,6 +251,13 @@ byId('btnLoad').onclick = async () => {
   }catch(e){ alert('Failed to load JSON. Check the URL and CORS.'); }
 };
 
+// Auto-load on page open when a URL is prefilled
+window.addEventListener('DOMContentLoaded', () => {
+  const pref = byId('urlInput').value.trim();
+  if (pref) byId('btnLoad').click();
+});
+
+// File upload
 byId('fileInput').onchange = (e) => {
   const f = e.target.files && e.target.files[0];
   if(!f) return;
