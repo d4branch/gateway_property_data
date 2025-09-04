@@ -1,0 +1,592 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Conference Travel Estimator — RVP-backed</title>
+
+<!-- Leaflet + Chart.js (for map and bar chart) -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+
+<style>
+  :root { --bg:#0b0d12; --card:#121621; --muted:#8ea0b3; --accent:#4db5ff; --line:#1f2634; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background:var(--bg); color:#e8eef6; }
+  header { padding:18px 20px; border-bottom:1px solid var(--line); position:sticky; top:0; background:linear-gradient(180deg,rgba(11,13,18,.95),rgba(11,13,18,.75)); backdrop-filter: blur(6px); }
+  h1 { margin:0 0 4px 0; font-size:20px; }
+  .wrap { max-width:1100px; margin:18px auto; padding:0 16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; margin-bottom:14px; }
+  label { font-size:12px; color:var(--muted); display:block; margin-bottom:6px; }
+  input[type="text"],input[type="number"],input[type="file"]{ width:100%; background:#0e1320; color:#e8eef6; border:1px solid var(--line); border-radius:8px; padding:8px 10px; }
+  .row{ display:grid; grid-template-columns:1fr; gap:12px; }
+  @media (min-width: 900px){ .row{ grid-template-columns:1fr 1fr; } }
+  .btn{ background:#0e1320; color:#e8eef6; border:1px solid var(--line); border-radius:8px; padding:8px 10px; cursor:pointer; }
+  .btn.small{ font-size:12px; padding:6px 8px; }
+  .grid-2{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .summary{ display:flex; align-items:center; justify-content:space-between; }
+  .big{ font-size:22px; font-weight:700; }
+  table{ width:100%; border-collapse:collapse; font-size:13px; }
+  th, td{ padding:10px 8px; border-bottom:1px solid var(--line); text-align:left; }
+  thead th{ font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.02em; }
+  .muted{ color:var(--muted); }
+  .controls{ display:grid; grid-template-columns:repeat(4,1fr); gap:12px; }
+  @media (max-width: 900px){ .controls{ grid-template-columns:1fr 1fr; } }
+  .pill{ display:inline-flex; align-items:center; gap:6px; font-size:12px; padding:4px 8px; border:1px solid var(--line); border-radius:999px; }
+  .note{ font-size:12px; color:var(--muted); }
+  pre{ background:#0e1320; border:1px solid var(--line); border-radius:8px; padding:8px; overflow:auto; }
+  .toolbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+
+  /* Map & chart panels */
+  #map { height: 420px; border-radius:10px; }
+  .panel-tabs { display:flex; gap:8px; margin-bottom:10px; }
+  .panel-tabs .btn.active { background:#1a2233; border-color:#2a3242; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Conference Travel Estimator (RVP-backed)</h1>
+    <div class="muted">Loads clean lat/lng from your RVP map page or a JSON file and computes ATL vs HSV costs.</div>
+  </header>
+
+  <div class="wrap">
+    <div class="card">
+      <div class="row">
+        <div>
+          <label>Load from URL (same-origin Pages path recommended)</label>
+          <div class="toolbar">
+            <input id="urlInput" type="text"
+              value="https://d4branch.github.io/gateway-property-map/" />
+            <button class="btn" id="btnLoad">Load JSON</button>
+            <button class="btn" id="btnLoadRvp">Load from RVP map</button>
+          </div>
+          <div class="note">JSON shapes: <code>[...]</code>, <code>{records:[...]}</code>, <code>{value:[...]}</code>, <code>{d:{results:[...]}}</code>, or GeoJSON-like. RVP button scrapes the page’s inline <code>markerData</code>.</div>
+        </div>
+        <div>
+          <label>…or upload JSON file</label>
+          <input id="fileInput" type="file" accept="application/json" />
+        </div>
+      </div>
+      <div id="status" class="note" style="margin-top:8px;">Status: idle</div>
+      <details style="margin-top:6px;">
+        <summary class="muted">Debug (first 5 parsed rows)</summary>
+        <pre id="debug"></pre>
+      </details>
+    </div>
+
+    <div class="card">
+      <div class="controls">
+        <div>
+          <label>Mileage rate ($/mile)</label>
+          <input type="number" id="rate" step="0.01" value="0.70"/>
+        </div>
+        <div>
+          <label>Road factor (vs straight-line)</label>
+          <input type="number" id="road" step="0.01" value="1.18"/>
+          <div class="note">Tip: 1.15–1.25 is typical.</div>
+        </div>
+        <div>
+          <label>Distance cap (one-way miles, 0 = none)</label>
+          <input type="number" id="cap" step="10" value="0"/>
+        </div>
+        <div>
+          <label>Options</label>
+          <div class="toolbar">
+            <label class="pill"><input type="checkbox" id="round" checked> Round-trip</label>
+            <button class="btn small" id="btnAllOn">Include all</button>
+            <button class="btn small" id="btnAllOff">Exclude all</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="card" id="sumATL">
+        <div class="summary">
+          <div>
+            <div class="muted">Total – Atlanta, GA</div>
+            <div class="big" id="atlMiles">0 mi</div>
+          </div>
+          <div style="text-align:right;">
+            <div class="big" id="atlCost">$0</div>
+            <button class="btn small" id="exportATL">Export CSV</button>
+          </div>
+        </div>
+        <div class="note" id="atlMeta">0 sites · 0 marked fly</div>
+      </div>
+
+      <div class="card" id="sumHSV">
+        <div class="summary">
+          <div>
+            <div class="muted">Total – Huntsville, AL</div>
+            <div class="big" id="hsvMiles">0 mi</div>
+          </div>
+          <div style="text-align:right;">
+            <div class="big" id="hsvCost">$0</div>
+            <button class="btn small" id="exportHSV">Export CSV</button>
+          </div>
+        </div>
+        <div class="note" id="hsvMeta">0 sites · 0 marked fly</div>
+      </div>
+    </div>
+
+    <!-- Map + Chart panel -->
+    <div class="card">
+      <div class="panel-tabs">
+        <button class="btn small active" id="tabMap">Map (rings)</button>
+        <button class="btn small" id="tabChart">Bar chart</button>
+        <span class="note" style="margin-left:auto;">Map/Chart reflect current filters & “Include” toggles.</span>
+      </div>
+
+      <div id="panelMap">
+        <div class="toolbar" style="margin-bottom:8px;">
+          <span class="pill">ATL rings: 100/200/300 mi</span>
+          <span class="pill">HSV rings: 100/200/300 mi</span>
+          <button class="btn small" id="fitMap">Fit to markers</button>
+        </div>
+        <div id="map"></div>
+      </div>
+
+      <div id="panelChart" style="display:none;">
+        <div class="toolbar" style="margin-bottom:8px;">
+          <label class="pill">Destination:
+            <select id="chartDest" style="background:#0e1320;color:#e8eef6;border:1px solid var(--line);border-radius:6px;padding:4px 6px;">
+              <option value="ATL">Atlanta (ATL)</option>
+              <option value="HSV">Huntsville (HSV)</option>
+            </select>
+          </label>
+          <span class="note">Buckets: 0–100, 100–200, 200–300, 300–400, 400–500, &gt;500 miles (one-way, road factor applied).</span>
+        </div>
+        <canvas id="distChart" height="220"></canvas>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="toolbar" style="margin-bottom:10px;">
+        <span class="muted">Filter:</span>
+        <input id="filter" type="text" placeholder="name / city / state / RVP / manager" />
+        <button class="btn small" id="markFarATL">Far→Fly (ATL > 300 mi)</button>
+        <button class="btn small" id="markFarHSV">Far→Fly (HSV > 300 mi)</button>
+      </div>
+      <div style="overflow:auto;">
+        <table>
+          <thead>
+            <tr>
+              <th>Include</th>
+              <th>Fly</th>
+              <th>Property</th>
+              <th>City/State</th>
+              <th>RVP</th>
+              <th>Manager</th>
+              <th>ATL mi / $</th>
+              <th>HSV mi / $</th>
+            </tr>
+          </thead>
+          <tbody id="tbody"></tbody>
+        </table>
+      </div>
+      <div class="note" id="empty">Load your properties JSON—or click “Load from RVP map.”</div>
+    </div>
+  </div>
+
+<script>
+// ---------- constants & math ----------
+const DEST_ATL = { lat:33.7490, lon:-84.3880 };
+const DEST_HSV = { lat:34.7304, lon:-86.5861 };
+const MI_TO_M = 1609.344;
+
+function toRad(v){ return v * Math.PI / 180; }
+function haversineKm(a,b,c,d){
+  const R=6371, dLat=toRad(c-a), dLon=toRad(d-b);
+  const A=Math.sin(dLat/2)**2 + Math.cos(toRad(a))*Math.cos(toRad(c))*Math.sin(dLon/2)**2;
+  return 2*R*Math.atan2(Math.sqrt(A),Math.sqrt(1-A));
+}
+function miles(rec, dest, road){
+  if(!isFinite(rec.lat)||!isFinite(rec.lon)) return NaN;
+  return haversineKm(rec.lat, rec.lon, dest.lat, dest.lon) * 0.621371 * road;
+}
+
+// ---------- coordinate sanitizer ----------
+function sanitizeLatLon(latLike, lonLike) {
+  let lat = Number(latLike), lon = Number(lonLike);
+
+  // Detect swapped values and swap back
+  if ((Math.abs(lat) > 90 && Math.abs(lon) <= 180) ||
+      (Math.abs(lon) <= 90 && Math.abs(lat) > 90)) {
+    const t = lat; lat = lon; lon = t;
+  }
+
+  if (!isFinite(lat) || !isFinite(lon)) return { ok:false };
+  if (Math.abs(lat) > 90 || Math.abs(lon) > 180) return { ok:false };
+
+  // US longitudes should be negative
+  if (lat >= 18 && lat <= 72 && lon > 0 && lon <= 180) lon = -lon;
+
+  if (Math.abs(lat) > 90 || Math.abs(lon) > 180) return { ok:false };
+  return { ok:true, lat, lon };
+}
+
+// ---------- generic JSON parsing ----------
+function getRecords(data){
+  if(Array.isArray(data)) return data;
+  if(Array.isArray(data.records)) return data.records;
+  if(Array.isArray(data.value)) return data.value;
+  if(data.d && Array.isArray(data.d.results)) return data.d.results;
+  if(Array.isArray(data.items)) return data.items;
+  if(Array.isArray(data.features)){
+    // GeoJSON-like
+    return data.features.map(f=>({
+      ...f.properties,
+      lat: f.geometry && (f.geometry.coordinates[1] ?? f.geometry.coordinates.lat),
+      lon: f.geometry && (f.geometry.coordinates[0] ?? f.geometry.coordinates.lon)
+    }));
+  }
+  return [];
+}
+
+// normalize common shapes
+function norm(rec, idx){
+  const id = rec.id ?? rec.ID ?? rec.pk ?? rec.Title ?? String(idx+1);
+  const name = rec.name ?? rec.Name ?? rec.property ?? rec.Property ?? rec.Title ?? `Site ${idx+1}`;
+
+  const rawLat = rec.lat ?? rec.Lat ?? rec.latitude ?? rec.Latitude ?? rec.lat_dd ?? rec.latDeg;
+  const rawLon = rec.lon ?? rec.lng ?? rec.long ?? rec.Long ?? rec.longitude ?? rec.Longitude ?? rec.lon_dd ?? rec.lonDeg;
+
+  const fixed = sanitizeLatLon(rawLat, rawLon);
+
+  return {
+    id, name,
+    lat: fixed.ok ? fixed.lat : NaN,
+    lon: fixed.ok ? fixed.lon : NaN,
+    city: rec.city ?? rec.City ?? "",
+    state: rec.state ?? rec.State ?? "",
+    rvp: rec.rvp ?? rec.RVP ?? "",
+    manager: rec.manager ?? rec.Manager ?? "",
+  };
+}
+
+// ---------- RVP page scraper ----------
+function extractMarkerDataArray(htmlText) {
+  const m = htmlText.match(/var\s+markerData\s*=\s*(\[[\s\S]*?\]);/);
+  if (!m) throw new Error("markerData not found in page");
+  const arrayLiteral = m[1];
+  const data = (new Function(`"use strict"; return (${arrayLiteral});`))();
+  if (!Array.isArray(data)) throw new Error("markerData is not an array");
+  return data;
+}
+
+function fromMarkerData(items) {
+  return items.map((it, idx) => {
+    // name = the <b> ... </b> in popup
+    let name = `Site ${idx+1}`;
+    const nm = String(it.popup||"").match(/<b>(.*?)<\/b>/i);
+    if (nm) name = nm[1];
+
+    // try to parse city/state from the "Address:" line (best-effort)
+    let city = "", state = "";
+    const addr = String(it.popup||"").split("Address:")[1] || "";
+    const line = addr.split("<br>")[0] || "";
+    const parts = line.split(",").map(s => s.trim());
+    if (parts.length >= 2) {
+      city = parts[parts.length-2];
+      const st = (parts[parts.length-1] || "").trim().split(/\s+/)[0] || "";
+      if (/^[A-Z]{2}$/.test(st)) state = st;
+    }
+
+    const fixed = sanitizeLatLon(it.lat, it.lng);
+
+    return {
+      id: idx+1,
+      name,
+      lat: fixed.ok ? fixed.lat : NaN,
+      lon: fixed.ok ? fixed.lon : NaN,
+      city,
+      state,
+      rvp: "",
+      manager: "",
+    };
+  });
+}
+
+// ---------- app state ----------
+let records = [];
+let state = {}; // id -> {included:true, fly:false}
+function byId(id){ return document.getElementById(id); }
+function fmtMi(v){ return `${Math.round(v).toLocaleString()} mi`; }
+function fmt$(v){ return `$${Math.round(v).toLocaleString()}`; }
+function escapeHtml(s){ return String(s).replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+// ---------- Leaflet map ----------
+let map, ringsATL = [], ringsHSV = [], markersLayer;
+function ensureMap(){
+  if(map) return;
+  map = L.map('map', { zoomControl:true, minZoom:4 }).setView([33.5,-86.8], 6);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18 }).addTo(map);
+  markersLayer = L.layerGroup().addTo(map);
+
+  // helper to add ring set
+  function addRings(center, color){
+    const radii = [100,200,300]; // miles
+    return radii.map(mi => L.circle([center.lat, center.lon], {
+      radius: mi*MI_TO_M,
+      color, weight:1.2, dashArray:'4,6', fill:false, opacity:0.7
+    }).addTo(map));
+  }
+  ringsATL = addRings(DEST_ATL, '#4db5ff');
+  ringsHSV = addRings(DEST_HSV, '#38d39f');
+
+  // labels for ATL/HSV
+  L.circleMarker([DEST_ATL.lat, DEST_ATL.lon], {radius:5, color:'#4db5ff'}).addTo(map).bindTooltip('ATL', {permanent:true, direction:'top'});
+  L.circleMarker([DEST_HSV.lat, DEST_HSV.lon], {radius:5, color:'#38d39f'}).addTo(map).bindTooltip('HSV', {permanent:true, direction:'top'});
+}
+
+function renderMap(){
+  ensureMap();
+  markersLayer.clearLayers();
+  const road = Number(byId('road').value)||1.18;
+  const q = byId('filter').value.trim().toLowerCase();
+
+  const pts = [];
+  for(const r of records){
+    const st = state[r.id] ?? (state[r.id]={included:true, fly:false});
+    if(!st.included) continue;
+    if(q && !(r.name?.toLowerCase().includes(q) || (r.city||'').toLowerCase().includes(q) || (r.state||'').toLowerCase().includes(q))) continue;
+    if(!isFinite(r.lat)||!isFinite(r.lon)) continue;
+
+    // marker color: nearer ATL (blue) vs nearer HSV (green)
+    const mA = miles(r, DEST_ATL, road), mH = miles(r, DEST_HSV, road);
+    const nearerATL = (mA||Infinity) <= (mH||Infinity);
+    const color = nearerATL ? '#4db5ff' : '#38d39f';
+
+    const marker = L.circleMarker([r.lat, r.lon], {
+      radius:5, color, fillColor:color, fillOpacity:0.85, weight:1
+    }).bindPopup(`<strong>${escapeHtml(r.name)}</strong><br>${escapeHtml([r.city,r.state].filter(Boolean).join(', '))}<br>
+      ATL: ${isFinite(mA)? mA.toFixed(0):'—'} mi • HSV: ${isFinite(mH)? mH.toFixed(0):'—'} mi`);
+    marker.addTo(markersLayer);
+    pts.push([r.lat, r.lon]);
+  }
+
+  if(pts.length){
+    const b = L.latLngBounds(pts);
+    map.fitBounds(b.pad(0.2));
+  }
+}
+
+byId('fitMap').onclick = renderMap;
+
+// ---------- Chart.js histogram ----------
+let chart;
+function renderChart(){
+  const ctx = byId('distChart').getContext('2d');
+  const road = Number(byId('road').value)||1.18;
+  const dest = byId('chartDest').value === 'HSV' ? DEST_HSV : DEST_ATL;
+  const q = byId('filter').value.trim().toLowerCase();
+
+  const buckets = [0,100,200,300,400,500,Infinity];
+  const labels = ['0–100','100–200','200–300','300–400','400–500','>500'];
+  const counts = [0,0,0,0,0,0];
+
+  for(const r of records){
+    const st = state[r.id] ?? (state[r.id]={included:true, fly:false});
+    if(!st.included) continue;
+    if(q && !(r.name?.toLowerCase().includes(q) || (r.city||'').toLowerCase().includes(q) || (r.state||'').toLowerCase().includes(q))) continue;
+    const m = miles(r, dest, road);
+    if(!isFinite(m)) continue;
+    for(let i=0;i<labels.length;i++){
+      if(m >= buckets[i] && m < buckets[i+1]){ counts[i]++; break; }
+    }
+  }
+
+  const data = { labels, datasets: [{ label: (dest===DEST_ATL?'ATL':'HSV')+' distance (one-way mi)', data:counts }] };
+
+  if(chart){ chart.data = data; chart.update(); }
+  else {
+    chart = new Chart(ctx, {
+      type: 'bar',
+      data,
+      options: {
+        responsive:true,
+        plugins:{ legend:{ display:false }, tooltip:{ callbacks:{ label:(ctx)=>`${ctx.raw} sites` } } },
+        scales:{ x:{ grid:{ color:'#1f2634' } }, y:{ beginAtZero:true, grid:{ color:'#1f2634' } } }
+      }
+    });
+  }
+}
+
+// ---------- render table & totals ----------
+function render(){
+  const rate = Number(byId('rate').value)||0;
+  const road = Number(byId('road').value)||1.18;
+  const cap  = Number(byId('cap').value)||0;
+  const round = byId('round').checked;
+  const q = byId('filter').value.trim().toLowerCase();
+
+  const tbody = byId('tbody');
+  tbody.innerHTML = '';
+
+  let totalsATL = { miles:0, cost:0, sites:0, flyers:0 };
+  let totalsHSV = { miles:0, cost:0, sites:0, flyers:0 };
+
+  const shown = records.filter(r => !q ||
+    r.name.toLowerCase().includes(q) ||
+    (r.city||'').toLowerCase().includes(q) ||
+    (r.state||'').toLowerCase().includes(q) ||
+    (r.rvp||'').toLowerCase().includes(q) ||
+    (r.manager||'').toLowerCase().includes(q)
+  );
+
+  for(const r of shown){
+    const st = state[r.id] ?? (state[r.id] = {included:true, fly:false});
+
+    let mA = miles(r, DEST_ATL, road);
+    let mH = miles(r, DEST_HSV, road);
+    let tA = round ? mA*2 : mA;
+    let tH = round ? mH*2 : mH;
+    let cA = (isFinite(tA)? tA*rate:0);
+    let cH = (isFinite(tH)? tH*rate:0);
+
+    if(st.included){
+      totalsATL.sites++; totalsHSV.sites++;
+      if(st.fly || (cap>0 && isFinite(mA) && mA>cap)) { totalsATL.flyers++; cA=0; tA=0; }
+      if(st.fly || (cap>0 && isFinite(mH) && mH>cap)) { totalsHSV.flyers++; cH=0; tH=0; }
+      totalsATL.miles += isFinite(tA)? tA:0; totalsATL.cost += cA;
+      totalsHSV.miles += isFinite(tH)? tH:0; totalsHSV.cost += cH;
+    }
+
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><input type="checkbox" ${st.included? 'checked':''} data-act="inc" data-id="${r.id}"></td>
+      <td><input type="checkbox" ${st.fly? 'checked':''} data-act="fly" data-id="${r.id}"></td>
+      <td><strong>${escapeHtml(r.name)}</strong></td>
+      <td>${escapeHtml([r.city,r.state].filter(Boolean).join(', '))}</td>
+      <td>${escapeHtml(r.rvp||'')}</td>
+      <td>${escapeHtml(r.manager||'')}</td>
+      <td>${isFinite(tA)? `${tA.toFixed(0)} mi / $${(cA).toFixed(0)}`:'—'}</td>
+      <td>${isFinite(tH)? `${tH.toFixed(0)} mi / $${(cH).toFixed(0)}`:'—'}</td>`;
+    tbody.appendChild(tr);
+  }
+
+  byId('atlMiles').textContent = `${Math.round(totalsATL.miles).toLocaleString()} mi`;
+  byId('atlCost').textContent  = `$${Math.round(totalsATL.cost).toLocaleString()}`;
+  byId('hsvMiles').textContent = `${Math.round(totalsHSV.miles).toLocaleString()} mi`;
+  byId('hsvCost').textContent  = `$${Math.round(totalsHSV.cost).toLocaleString()}`;
+  byId('atlMeta').textContent  = `${totalsATL.sites} sites · ${totalsATL.flyers} marked fly`;
+  byId('hsvMeta').textContent  = `${totalsHSV.sites} sites · ${totalsHSV.flyers} marked fly`;
+  byId('empty').style.display = records.length? 'none':'block';
+
+  // refresh map & chart too
+  renderMap();
+  renderChart();
+}
+
+// ---------- loaders ----------
+async function loadFromUrl(url){
+  const s = byId('status');
+  try{
+    s.textContent = 'Status: fetching JSON…';
+    const r = await fetch(url, { cache:'no-store' });
+    if(!r.ok){ s.textContent = `Status: HTTP ${r.status}`; return; }
+    const data = await r.json();
+    const arr = getRecords(data);
+    records = arr.map(norm);
+    state = {};
+    s.textContent = `Status: loaded ${records.length} records`;
+    byId('debug').textContent = JSON.stringify(records.slice(0,5), null, 2);
+    render();
+  }catch(e){ s.textContent = `Status: failed — ${e.message}`; }
+}
+
+async function loadFromRvpPage(pageUrl) {
+  const s = byId('status');
+  try {
+    s.textContent = 'Status: fetching RVP page…';
+    const r = await fetch(pageUrl, { cache: 'no-store' });
+    if (!r.ok) { s.textContent = `Status: HTTP ${r.status}`; return; }
+    const html = await r.text();
+    const markerItems = extractMarkerDataArray(html);
+    records = fromMarkerData(markerItems);
+    state = {};
+    s.textContent = `Status: loaded ${records.length} sites from RVP map`;
+    byId('debug').textContent = JSON.stringify(records.slice(0,5), null, 2);
+    render();
+  } catch (e) {
+    s.textContent = `Status: failed — ${e.message}`;
+  }
+}
+
+// ---------- events ----------
+byId('btnLoad').onclick = () => {
+  const url = byId('urlInput').value.trim();
+  if(url) loadFromUrl(url);
+};
+byId('btnLoadRvp').onclick = () => {
+  const page = byId('urlInput').value.trim() || "https://d4branch.github.io/gateway-property-map/";
+  loadFromRvpPage(page);
+};
+
+byId('fileInput').onchange = (e) => {
+  const f = e.target.files && e.target.files[0];
+  if(!f) return;
+  const fr = new FileReader();
+  fr.onload = () => {
+    try{
+      const data = JSON.parse(String(fr.result));
+      const arr = getRecords(data);
+      records = arr.map(norm);
+      state = {};
+      byId('status').textContent = `Status: loaded ${records.length} records (from file)`;
+      byId('debug').textContent = JSON.stringify(records.slice(0,5), null, 2);
+      render();
+    }catch(err){ byId('status').textContent = 'Status: invalid JSON'; }
+  };
+  fr.readAsText(f);
+};
+
+['rate','road','cap','round','filter','chartDest'].forEach(id=>{
+  byId(id).addEventListener('input', render);
+  byId(id).addEventListener('change', render);
+});
+
+byId('tbody').addEventListener('change', (e)=>{
+  const t = e.target; if(!t || !t.dataset) return;
+  const id = t.dataset.id; const act = t.dataset.act; if(!id||!act) return;
+  const st = state[id] ?? (state[id]={included:true, fly:false});
+  if(act==='inc') st.included = t.checked; else if(act==='fly') st.fly = t.checked;
+  render();
+});
+
+byId('btnAllOn').onclick = ()=>{ for(const r of records){ (state[r.id]??(state[r.id]={included:true,fly:false})).included=true; } render(); };
+byId('btnAllOff').onclick = ()=>{ for(const r of records){ (state[r.id]??(state[r.id]={included:true,fly:false})).included=false; } render(); };
+
+byId('markFarATL').onclick = ()=> markFar(300, DEST_ATL);
+byId('markFarHSV').onclick = ()=> markFar(300, DEST_HSV);
+function markFar(threshold, dest){
+  const road = Number(byId('road').value)||1.18;
+  for(const r of records){
+    const m = miles(r, dest, road);
+    if(isFinite(m) && m>threshold){ (state[r.id]??(state[r.id]={included:true,fly:false})).fly = true; }
+  }
+  render();
+}
+
+// Tabs: Map / Chart
+byId('tabMap').onclick = ()=>{
+  byId('tabMap').classList.add('active'); byId('tabChart').classList.remove('active');
+  byId('panelMap').style.display='block'; byId('panelChart').style.display='none';
+  setTimeout(renderMap, 50);
+};
+byId('tabChart').onclick = ()=>{
+  byId('tabChart').classList.add('active'); byId('tabMap').classList.remove('active');
+  byId('panelChart').style.display='block'; byId('panelMap').style.display='none';
+  renderChart();
+};
+
+// Auto-load from RVP page on open
+window.addEventListener('DOMContentLoaded', () => {
+  const pref = byId('urlInput').value.trim();
+  loadFromRvpPage(pref || "https://d4branch.github.io/gateway-property-map/");
+});
+</script>
+</body>
+</html>
