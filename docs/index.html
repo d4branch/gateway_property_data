@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Conference Travel Estimator</title>
+<title>Conference Travel Estimator — FRESH START</title>
 <style>
   :root { --bg:#0b0d12; --card:#121621; --muted:#8ea0b3; --accent:#4db5ff; --line:#1f2634; }
   * { box-sizing:border-box; }
@@ -29,12 +29,13 @@
   @media (max-width: 900px){ .controls{ grid-template-columns:1fr 1fr; } }
   .pill{ display:inline-flex; align-items:center; gap:6px; font-size:12px; padding:4px 8px; border:1px solid var(--line); border-radius:999px; }
   .note{ font-size:12px; color:var(--muted); }
+  pre{ background:#0e1320; border:1px solid var(--line); border-radius:8px; padding:8px; overflow:auto; }
 </style>
 </head>
 <body>
   <header>
-    <h1>Conference Travel Estimator (city-aware)</h1>
-    <div class="muted">If coordinates look wrong, we’ll estimate from city/state instead. Prefilled with your repo’s JSON.</div>
+    <h1>Conference Travel Estimator (fresh baseline)</h1>
+    <div class="muted">Loads JSON and computes ATL vs HSV costs. Minimal logic; no city fallback yet — just to prove loading works cleanly.</div>
   </header>
 
   <div class="wrap">
@@ -46,13 +47,18 @@
             <input id="urlInput" type="text" value="https://d4branch.github.io/gateway_travel_data/properties.json" />
             <button class="btn" id="btnLoad">Load</button>
           </div>
-          <div class="note">Required fields per record: some form of name (<code>name</code>/<code>Title</code>) plus either valid <code>lat/lon</code> or a <code>city</code> and <code>state</code> we can map.</div>
+          <div class="note">Accepted shapes: <code>[...]</code>, <code>{records:[...]}</code>, <code>{value:[...]}</code>, <code>{d:{results:[...]}}</code>. Fields used: <code>lat/lon</code> (or <code>latitude/longitude</code>) and <code>name/Title/Property</code>.</div>
         </div>
         <div>
           <label>…or upload JSON file</label>
           <input id="fileInput" type="file" accept="application/json" />
         </div>
       </div>
+      <div id="status" class="note" style="margin-top:8px;">Status: idle</div>
+      <details style="margin-top:6px;">
+        <summary class="muted">Debug (parsed sample)</summary>
+        <pre id="debug"></pre>
+      </details>
     </div>
 
     <div class="card">
@@ -73,13 +79,10 @@
         <div>
           <label>Options</label>
           <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-              <label class="pill"><input type="checkbox" id="round" checked> Round-trip</label>
-              <label class="pill"><input type="checkbox" id="useCity" checked> Prefer city/state over bad coords</label>
-              <label class="pill"><input type="checkbox" id="showAnom"> Show suspected anomalies</label>
-              <button class="btn small" id="btnAllOn">Include all</button>
-              <button class="btn small" id="btnAllOff">Exclude all</button>
-              <button class="btn small" id="exportAnom">Export anomalies CSV</button>
-            </div>
+            <label class="pill"><input type="checkbox" id="round" checked> Round-trip</label>
+            <button class="btn small" id="btnAllOn">Include all</button>
+            <button class="btn small" id="btnAllOff">Exclude all</button>
+          </div>
         </div>
       </div>
     </div>
@@ -140,133 +143,61 @@
       </div>
       <div class="note" id="empty">Load your properties JSON to begin.</div>
     </div>
-
-    <div class="note">If coordinates are missing or look wrong, we fall back to a city/state lookup (centrals or known city centroids). This keeps estimates sane without third‑party APIs.</div>
   </div>
 
 <script>
-// ----------- Destinations -----------
+// ---- basic math ----
 const DEST_ATL = { lat:33.7490, lon:-84.3880 };
 const DEST_HSV = { lat:34.7304, lon:-86.5861 };
-
-// ----------- State centroids (approx) for fallback -----------
-const STATE_CENTROIDS = {
-  AL:[32.806, -86.791], GA:[32.157, -82.907], TN:[35.747, -86.692],
-  NC:[35.759, -79.019], SC:[33.837, -81.163], MS:[32.741, -89.678],
-  LA:[31.169, -91.867], FL:[27.664, -81.516], VA:[37.431, -78.656],
-  OK:[35.468, -97.516], AR:[34.969, -92.373], KY:[37.839, -84.270]
-};
-
-// ----------- Known city centroids (handful; add as needed) -----------
-// Format: CITY_FIXES["city|ST"] = [lat, lon]
-const CITY_FIXES = Object.create(null);
-(function seed(){
-  const add=(c,st,lat,lon)=>CITY_FIXES[(c.trim().toLowerCase()+"|"+st.trim().toUpperCase())]=[lat,lon];
-  add('chattanooga','TN',35.0456,-85.3097);
-  add('hogansville','GA',33.1732,-84.9144);
-  add('lagrange','GA',33.0393,-85.0319);
-  add('americus','GA',32.0724,-84.2327);
-  add('jacksonville','NC',34.7541,-77.4302);
-  add('norman','OK',35.2226,-97.4395);
-  add('midlothian','VA',37.5053,-77.6497);
-  add('wilmington','NC',34.2257,-77.9447);
-  add('lafayette','LA',30.2241,-92.0198);
-  add('guthrie','OK',35.8789,-97.4253);
-  add('mobile','AL',30.6954,-88.0399);
-  add('birmingham','AL',33.5186,-86.8104);
-  add('madison','AL',34.6993,-86.7483);
-  add('florence','AL',34.7998,-87.6773);
-  add('atlanta','GA',33.7490,-84.3880);
-  add('prattville','AL',32.4640,-86.4597);
-  add('semmes','AL',30.7780,-88.2586);
-  add('decatur','AL',34.6059,-86.9833);
-  add('decatur','GA',33.7748,-84.2963);
-  add('robertsdale','AL',30.5530,-87.7175);
-  add('lincolnton','NC',35.4737,-81.2548);
-  add('lawrenceburg','TN',35.2423,-87.3347);
-})();
-
-// ----------- Cleaning + City/State resolution -----------
-function cleanLatLon(lat, lon) {
-  let L = Number(lat), G = Number(lon);
-  if ((Math.abs(L) > 90 && Math.abs(G) <= 180) || (Math.abs(G) <= 90 && Math.abs(L) > 90)) {
-    const t=L; L=G; G=t;
-  }
-  if (Math.abs(L) > 90 || Math.abs(G) > 180) return { ok:false, lat:NaN, lon:NaN };
-  if (L >= 18 && L <= 72 && G > 0 && G <= 180) { G = -G; }
-  if (Math.abs(L) > 90 || Math.abs(G) > 180) return { ok:false, lat:NaN, lon:NaN };
-  return { ok:true, lat:L, lon:G };
-}
-
-function resolveFromCityState(city, state){
-  if (!city && !state) return null;
-  const key = (String(city||'').trim().toLowerCase()+"|"+String(state||'').trim().toUpperCase());
-  if (CITY_FIXES[key]) return { lat: CITY_FIXES[key][0], lon: CITY_FIXES[key][1], source:'city' };
-  const st = String(state||'').trim().toUpperCase();
-  if (STATE_CENTROIDS[st]) { const [lat,lon]=STATE_CENTROIDS[st]; return { lat, lon, source:'state' }; }
-  return null;
-}
-
-// ----------- Distance math -----------
 function toRad(v){ return v * Math.PI / 180; }
 function haversineKm(a,b,c,d){
   const R=6371, dLat=toRad(c-a), dLon=toRad(d-b);
   const A=Math.sin(dLat/2)**2 + Math.cos(toRad(a))*Math.cos(toRad(c))*Math.sin(dLon/2)**2;
   return 2*R*Math.atan2(Math.sqrt(A),Math.sqrt(1-A));
 }
-function milesLL(lat, lon, dest, road){
-  if(!isFinite(lat)||!isFinite(lon)) return NaN;
-  return haversineKm(lat, lon, dest.lat, dest.lon) * 0.621371 * road;
+function miles(rec, dest, road){
+  if(!isFinite(rec.lat)||!isFinite(rec.lon)) return NaN;
+  return haversineKm(rec.lat, rec.lon, dest.lat, dest.lon) * 0.621371 * road;
 }
 
-// ----------- Normalization -----------
+// ---- parsing helpers ----
+function getRecords(data){
+  if(Array.isArray(data)) return data;
+  if(Array.isArray(data.records)) return data.records;
+  if(Array.isArray(data.value)) return data.value;
+  if(data.d && Array.isArray(data.d.results)) return data.d.results;
+  if(Array.isArray(data.items)) return data.items;
+  if(Array.isArray(data.features)){
+    // GeoJSON-ish
+    return data.features.map(f=>({
+      ...f.properties,
+      lat: f.geometry && (f.geometry.coordinates[1] ?? f.geometry.coordinates.lat),
+      lon: f.geometry && (f.geometry.coordinates[0] ?? f.geometry.coordinates.lon)
+    }));
+  }
+  return [];
+}
+
 function norm(rec, idx){
   const id = rec.id ?? rec.ID ?? rec.pk ?? rec.Title ?? String(idx+1);
   const name = rec.name ?? rec.Name ?? rec.property ?? rec.Property ?? rec.Title ?? `Site ${idx+1}`;
-
-  const city = rec.city ?? rec.City ?? '';
-  const state = rec.state ?? rec.State ?? '';
-
-  // Try coords first
-  const rawLat = rec.lat ?? rec.latitude ?? rec.Latitude ?? rec.lat_dd ?? rec.lat_deg;
-  const rawLon = rec.lon ?? rec.lng ?? rec.long ?? rec.longitude ?? rec.Longitude ?? rec.long_deg;
-  const fixed = cleanLatLon(rawLat, rawLon);
-  let lat = fixed.ok ? fixed.lat : NaN;
-  let lon = fixed.ok ? fixed.lon : NaN;
-
-  let source = 'coord';
-  if (!isFinite(lat) || !isFinite(lon)) {
-    const fallback = resolveFromCityState(city, state);
-    if (fallback) { lat=fallback.lat; lon=fallback.lon; source=fallback.source; }
-  }
-
-  return {
-    id, name, lat, lon, city, state,
+  const lat = Number(rec.lat ?? rec.latitude ?? rec.Latitude);
+  const lon = Number(rec.lon ?? rec.lng ?? rec.long ?? rec.longitude ?? rec.Longitude);
+  return { id, name, lat, lon,
+    city: rec.city ?? rec.City ?? "",
+    state: rec.state ?? rec.State ?? "",
     rvp: rec.rvp ?? rec.RVP ?? "",
     manager: rec.manager ?? rec.Manager ?? "",
-    _source: source
   };
 }
 
-// ----------- App state + rendering -----------
-let records = []; // normalized
-let stateUI = {};   // id -> {included:true, fly:false}
-
+// ---- state ----
+let records = [];
+let state = {}; // id -> {included:true, fly:false}
 function byId(id){ return document.getElementById(id); }
 function fmtMi(v){ return `${Math.round(v).toLocaleString()} mi`; }
 function fmt$(v){ return `$${Math.round(v).toLocaleString()}`; }
 function escapeHtml(s){ return String(s).replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
-
-function milesTo(rec, dest, road){
-  const useCity = byId('useCity').checked;
-  // If source was coord and looks reasonable, use it. Otherwise, try city/state again here.
-  let lat = rec.lat, lon = rec.lon;
-  if ((!isFinite(lat) || !isFinite(lon)) && useCity){
-    const fb = resolveFromCityState(rec.city, rec.state);
-    if (fb) { lat = fb.lat; lon = fb.lon; }
-  }
-  return milesLL(lat, lon, dest, road);
-}
 
 function render(){
   const rate = Number(byId('rate').value)||0;
@@ -281,19 +212,19 @@ function render(){
   let totalsATL = { miles:0, cost:0, sites:0, flyers:0 };
   let totalsHSV = { miles:0, cost:0, sites:0, flyers:0 };
 
-  const shown = records.filter(r => {
-    const matches = !q || r.name.toLowerCase().includes(q) || (r.city||'').toLowerCase().includes(q) || (r.state||'').toLowerCase().includes(q) || (r.rvp||'').toLowerCase().includes(q) || (r.manager||'').toLowerCase().includes(q);
-    if (!matches) return false;
-    const chk = byId('showAnom');
-    if (chk && chk.checked) return isAnomaly(r);
-    return true;
-  });
+  const shown = records.filter(r => !q ||
+    r.name.toLowerCase().includes(q) ||
+    (r.city||'').toLowerCase().includes(q) ||
+    (r.state||'').toLowerCase().includes(q) ||
+    (r.rvp||'').toLowerCase().includes(q) ||
+    (r.manager||'').toLowerCase().includes(q)
+  );
 
   for(const r of shown){
-    const st = stateUI[r.id] ?? (stateUI[r.id] = {included:true, fly:false});
+    const st = state[r.id] ?? (state[r.id] = {included:true, fly:false});
 
-    let mA = milesTo(r, DEST_ATL, road);
-    let mH = milesTo(r, DEST_HSV, road);
+    let mA = miles(r, DEST_ATL, road);
+    let mH = miles(r, DEST_HSV, road);
     let tA = round ? mA*2 : mA;
     let tH = round ? mH*2 : mH;
     let cA = (isFinite(tA)? tA*rate:0);
@@ -307,14 +238,12 @@ function render(){
       totalsHSV.miles += isFinite(tH)? tH:0; totalsHSV.cost += cH;
     }
 
-    const tag = r._source==='city' ? ' · from city' : (r._source==='state' ? ' · approx state center' : '');
-
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td><input type="checkbox" ${st.included? 'checked':''} data-act="inc" data-id="${r.id}"></td>
       <td><input type="checkbox" ${st.fly? 'checked':''} data-act="fly" data-id="${r.id}"></td>
       <td><strong>${escapeHtml(r.name)}</strong></td>
-      <td>${escapeHtml([r.city,r.state].filter(Boolean).join(', '))}<span class="muted">${tag}</span></td>
+      <td>${escapeHtml([r.city,r.state].filter(Boolean).join(', '))}</td>
       <td>${escapeHtml(r.rvp||'')}</td>
       <td>${escapeHtml(r.manager||'')}</td>
       <td>${isFinite(tA)? `${tA.toFixed(0)} mi / $${(cA).toFixed(0)}`:'—'}</td>
@@ -331,27 +260,32 @@ function render(){
   byId('empty').style.display = records.length? 'none':'block';
 }
 
-// ----------- Events -----------
-byId('btnLoad').onclick = async () => {
-  const url = byId('urlInput').value.trim();
-  if(!url) return;
+// ---- load handlers ----
+async function loadFromUrl(url){
+  const s = byId('status');
   try{
+    s.textContent = 'Status: fetching…';
     const r = await fetch(url, { cache:'no-store' });
+    if(!r.ok){ s.textContent = `Status: HTTP ${r.status}`; return; }
     const data = await r.json();
-    const arr = Array.isArray(data) ? data : (data.records||[]);
+    const arr = getRecords(data);
     records = arr.map(norm);
-    stateUI = {}; // reset toggles when loading new data
+    state = {};
+    s.textContent = `Status: loaded ${records.length} records`;
+    byId('debug').textContent = JSON.stringify(records.slice(0,5), null, 2);
     render();
-  }catch(e){ alert('Failed to load JSON. Check the URL and CORS.'); }
-};
+  }catch(e){ s.textContent = `Status: failed — ${e.message}`; }
+}
 
-// Auto-load on page open when a URL is prefilled
+byId('btnLoad').onclick = () => {
+  const url = byId('urlInput').value.trim();
+  if(url) loadFromUrl(url);
+};
 window.addEventListener('DOMContentLoaded', () => {
   const pref = byId('urlInput').value.trim();
-  if (pref) byId('btnLoad').click();
+  if (pref) loadFromUrl(pref);
 });
 
-// File upload
 byId('fileInput').onchange = (e) => {
   const f = e.target.files && e.target.files[0];
   if(!f) return;
@@ -359,16 +293,18 @@ byId('fileInput').onchange = (e) => {
   fr.onload = () => {
     try{
       const data = JSON.parse(String(fr.result));
-      const arr = Array.isArray(data) ? data : (data.records||[]);
+      const arr = getRecords(data);
       records = arr.map(norm);
-      stateUI = {};
+      state = {};
+      byId('status').textContent = `Status: loaded ${records.length} records (from file)`;
+      byId('debug').textContent = JSON.stringify(records.slice(0,5), null, 2);
       render();
-    }catch{ alert('Invalid JSON file. Expect an array or {records:[...]}.'); }
+    }catch(err){ byId('status').textContent = 'Status: invalid JSON'; }
   };
   fr.readAsText(f);
 };
 
-['rate','road','cap','round','filter','useCity'].forEach(id=>{
+['rate','road','cap','round','filter'].forEach(id=>{
   byId(id).addEventListener('input', render);
   byId(id).addEventListener('change', render);
 });
@@ -376,60 +312,24 @@ byId('fileInput').onchange = (e) => {
 byId('tbody').addEventListener('change', (e)=>{
   const t = e.target; if(!t || !t.dataset) return;
   const id = t.dataset.id; const act = t.dataset.act; if(!id||!act) return;
-  const st = stateUI[id] ?? (stateUI[id]={included:true, fly:false});
+  const st = state[id] ?? (state[id]={included:true, fly:false});
   if(act==='inc') st.included = t.checked; else if(act==='fly') st.fly = t.checked;
   render();
 });
 
-byId('btnAllOn').onclick = ()=>{ for(const r of records){ (stateUI[r.id]??(stateUI[r.id]={included:true,fly:false})).included=true; } render(); };
-byId('btnAllOff').onclick = ()=>{ for(const r of records){ (stateUI[r.id]??(stateUI[r.id]={included:true,fly:false})).included=false; } render(); };
+byId('btnAllOn').onclick = ()=>{ for(const r of records){ (state[r.id]??(state[r.id]={included:true,fly:false})).included=true; } render(); };
+byId('btnAllOff').onclick = ()=>{ for(const r of records){ (state[r.id]??(state[r.id]={included:true,fly:false})).included=false; } render(); };
 
 byId('markFarATL').onclick = ()=> markFar(300, DEST_ATL);
 byId('markFarHSV').onclick = ()=> markFar(300, DEST_HSV);
-
 function markFar(threshold, dest){
   const road = Number(byId('road').value)||1.18;
   for(const r of records){
-    const m = milesTo(r, dest, road);
-    if(isFinite(m) && m>threshold){ (stateUI[r.id]??(stateUI[r.id]={included:true,fly:false})).fly = true; }
+    const m = miles(r, dest, road);
+    if(isFinite(m) && m>threshold){ (state[r.id]??(state[r.id]={included:true,fly:false})).fly = true; }
   }
   render();
 }
-
-// ---- Anomaly detection & export ----
-const NEAR_STATES = new Set(['AL','GA','TN','NC','SC','FL','MS','LA','VA','OK','AR','KY']);
-function isAnomaly(r){
-  const road = Number(byId('road').value)||1.18;
-  const mA = milesTo(r, DEST_ATL, road);
-  const mH = milesTo(r, DEST_HSV, road);
-  const minOneWay = Math.min(isFinite(mA)?mA:Infinity, isFinite(mH)?mH:Infinity);
-  const usedFallback = (r._source==='state' && (r.city||'').length>0);
-  const tooFarForNearState = NEAR_STATES.has(String(r.state||'').toUpperCase()) && isFinite(minOneWay) && minOneWay>500;
-  const absurd = (!isFinite(minOneWay) || minOneWay>1200);
-  return usedFallback || tooFarForNearState || absurd;
-}
-
-byId('exportAnom').onclick = ()=>{
-  const rows = [];
-  const rate = Number(byId('rate').value)||0;
-  const road = Number(byId('road').value)||1.18;
-  for(const r of records){
-    if(!isAnomaly(r)) continue;
-    const mA = milesTo(r, DEST_ATL, road);
-    const mH = milesTo(r, DEST_HSV, road);
-    rows.push({
-      id:r.id, name:r.name, city:r.city, state:r.state, source:r._source,
-      milesATL: isFinite(mA)? mA.toFixed(1):'', milesHSV: isFinite(mH)? mH.toFixed(1):'',
-      costATL: isFinite(mA)? (mA*2*rate).toFixed(0):'', costHSV: isFinite(mH)? (mH*2*rate).toFixed(0):''
-    });
-  }
-  const header = Object.keys(rows[0]||{id:'id',name:'name',city:'city',state:'state',source:'source',milesATL:'milesATL',milesHSV:'milesHSV',costATL:'costATL',costHSV:'costHSV'});
-  const csv = [header.join(',')].concat(rows.map(r=>header.map(k=>JSON.stringify(r[k]??'')).join(','))).join('
-');
-  const blob = new Blob([csv], {type:'text/csv'});
-  const a = document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='suspected-anomalies.csv'; a.click();
-  setTimeout(()=>URL.revokeObjectURL(a.href), 0);
-};
 </script>
 </body>
 </html>
