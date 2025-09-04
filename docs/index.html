@@ -73,11 +73,13 @@
         <div>
           <label>Options</label>
           <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-            <label class="pill"><input type="checkbox" id="round" checked> Round-trip</label>
-            <label class="pill"><input type="checkbox" id="useCity" checked> Prefer city/state over bad coords</label>
-            <button class="btn small" id="btnAllOn">Include all</button>
-            <button class="btn small" id="btnAllOff">Exclude all</button>
-          </div>
+              <label class="pill"><input type="checkbox" id="round" checked> Round-trip</label>
+              <label class="pill"><input type="checkbox" id="useCity" checked> Prefer city/state over bad coords</label>
+              <label class="pill"><input type="checkbox" id="showAnom"> Show suspected anomalies</label>
+              <button class="btn small" id="btnAllOn">Include all</button>
+              <button class="btn small" id="btnAllOff">Exclude all</button>
+              <button class="btn small" id="exportAnom">Export anomalies CSV</button>
+            </div>
         </div>
       </div>
     </div>
@@ -279,13 +281,13 @@ function render(){
   let totalsATL = { miles:0, cost:0, sites:0, flyers:0 };
   let totalsHSV = { miles:0, cost:0, sites:0, flyers:0 };
 
-  const shown = records.filter(r => !q ||
-    r.name.toLowerCase().includes(q) ||
-    (r.city||'').toLowerCase().includes(q) ||
-    (r.state||'').toLowerCase().includes(q) ||
-    (r.rvp||'').toLowerCase().includes(q) ||
-    (r.manager||'').toLowerCase().includes(q)
-  );
+  const shown = records.filter(r => {
+    const matches = !q || r.name.toLowerCase().includes(q) || (r.city||'').toLowerCase().includes(q) || (r.state||'').toLowerCase().includes(q) || (r.rvp||'').toLowerCase().includes(q) || (r.manager||'').toLowerCase().includes(q);
+    if (!matches) return false;
+    const chk = byId('showAnom');
+    if (chk && chk.checked) return isAnomaly(r);
+    return true;
+  });
 
   for(const r of shown){
     const st = stateUI[r.id] ?? (stateUI[r.id] = {included:true, fly:false});
@@ -393,6 +395,41 @@ function markFar(threshold, dest){
   }
   render();
 }
+
+// ---- Anomaly detection & export ----
+const NEAR_STATES = new Set(['AL','GA','TN','NC','SC','FL','MS','LA','VA','OK','AR','KY']);
+function isAnomaly(r){
+  const road = Number(byId('road').value)||1.18;
+  const mA = milesTo(r, DEST_ATL, road);
+  const mH = milesTo(r, DEST_HSV, road);
+  const minOneWay = Math.min(isFinite(mA)?mA:Infinity, isFinite(mH)?mH:Infinity);
+  const usedFallback = (r._source==='state' && (r.city||'').length>0);
+  const tooFarForNearState = NEAR_STATES.has(String(r.state||'').toUpperCase()) && isFinite(minOneWay) && minOneWay>500;
+  const absurd = (!isFinite(minOneWay) || minOneWay>1200);
+  return usedFallback || tooFarForNearState || absurd;
+}
+
+byId('exportAnom').onclick = ()=>{
+  const rows = [];
+  const rate = Number(byId('rate').value)||0;
+  const road = Number(byId('road').value)||1.18;
+  for(const r of records){
+    if(!isAnomaly(r)) continue;
+    const mA = milesTo(r, DEST_ATL, road);
+    const mH = milesTo(r, DEST_HSV, road);
+    rows.push({
+      id:r.id, name:r.name, city:r.city, state:r.state, source:r._source,
+      milesATL: isFinite(mA)? mA.toFixed(1):'', milesHSV: isFinite(mH)? mH.toFixed(1):'',
+      costATL: isFinite(mA)? (mA*2*rate).toFixed(0):'', costHSV: isFinite(mH)? (mH*2*rate).toFixed(0):''
+    });
+  }
+  const header = Object.keys(rows[0]||{id:'id',name:'name',city:'city',state:'state',source:'source',milesATL:'milesATL',milesHSV:'milesHSV',costATL:'costATL',costHSV:'costHSV'});
+  const csv = [header.join(',')].concat(rows.map(r=>header.map(k=>JSON.stringify(r[k]??'')).join(','))).join('
+');
+  const blob = new Blob([csv], {type:'text/csv'});
+  const a = document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='suspected-anomalies.csv'; a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 0);
+};
 </script>
 </body>
 </html>
