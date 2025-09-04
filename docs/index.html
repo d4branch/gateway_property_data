@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Conference Travel Estimator — FRESH START</title>
+<title>Conference Travel Estimator — RVP-backed</title>
 <style>
   :root { --bg:#0b0d12; --card:#121621; --muted:#8ea0b3; --accent:#4db5ff; --line:#1f2634; }
   * { box-sizing:border-box; }
@@ -30,24 +30,27 @@
   .pill{ display:inline-flex; align-items:center; gap:6px; font-size:12px; padding:4px 8px; border:1px solid var(--line); border-radius:999px; }
   .note{ font-size:12px; color:var(--muted); }
   pre{ background:#0e1320; border:1px solid var(--line); border-radius:8px; padding:8px; overflow:auto; }
+  .toolbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
 </style>
 </head>
 <body>
   <header>
-    <h1>Conference Travel Estimator (fresh baseline)</h1>
-    <div class="muted">Loads JSON and computes ATL vs HSV costs. Minimal logic; no city fallback yet — just to prove loading works cleanly.</div>
+    <h1>Conference Travel Estimator (RVP-backed)</h1>
+    <div class="muted">Loads clean lat/lng from your RVP map page or a JSON file and computes ATL vs HSV costs.</div>
   </header>
 
   <div class="wrap">
     <div class="card">
       <div class="row">
         <div>
-          <label>Load JSON from URL (same-origin Pages path recommended)</label>
-          <div style="display:flex; gap:8px; align-items:center;">
-            <input id="urlInput" type="text" value="https://d4branch.github.io/gateway_travel_data/properties.json" />
-            <button class="btn" id="btnLoad">Load</button>
+          <label>Load from URL (same-origin Pages path recommended)</label>
+          <div class="toolbar">
+            <input id="urlInput" type="text"
+              value="https://d4branch.github.io/gateway-property-map/" />
+            <button class="btn" id="btnLoad">Load JSON</button>
+            <button class="btn" id="btnLoadRvp">Load from RVP map</button>
           </div>
-          <div class="note">Accepted shapes: <code>[...]</code>, <code>{records:[...]}</code>, <code>{value:[...]}</code>, <code>{d:{results:[...]}}</code>. Fields used: <code>lat/lon</code> (or <code>latitude/longitude</code>) and <code>name/Title/Property</code>.</div>
+          <div class="note">JSON shapes: <code>[...]</code>, <code>{records:[...]}</code>, <code>{value:[...]}</code>, <code>{d:{results:[...]}}</code>, or GeoJSON-like. RVP button scrapes the page’s inline <code>markerData</code>.</div>
         </div>
         <div>
           <label>…or upload JSON file</label>
@@ -56,7 +59,7 @@
       </div>
       <div id="status" class="note" style="margin-top:8px;">Status: idle</div>
       <details style="margin-top:6px;">
-        <summary class="muted">Debug (parsed sample)</summary>
+        <summary class="muted">Debug (first 5 parsed rows)</summary>
         <pre id="debug"></pre>
       </details>
     </div>
@@ -78,7 +81,7 @@
         </div>
         <div>
           <label>Options</label>
-          <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+          <div class="toolbar">
             <label class="pill"><input type="checkbox" id="round" checked> Round-trip</label>
             <button class="btn small" id="btnAllOn">Include all</button>
             <button class="btn small" id="btnAllOff">Exclude all</button>
@@ -118,7 +121,7 @@
     </div>
 
     <div class="card">
-      <div style="display:flex; gap:8px; align-items:center; margin-bottom:10px;">
+      <div class="toolbar" style="margin-bottom:10px;">
         <span class="muted">Filter:</span>
         <input id="filter" type="text" placeholder="name / city / state / RVP / manager" />
         <button class="btn small" id="markFarATL">Far→Fly (ATL > 300 mi)</button>
@@ -141,14 +144,15 @@
           <tbody id="tbody"></tbody>
         </table>
       </div>
-      <div class="note" id="empty">Load your properties JSON to begin.</div>
+      <div class="note" id="empty">Load your properties JSON—or click “Load from RVP map.”</div>
     </div>
   </div>
 
 <script>
-// ---- basic math ----
+// ---------- constants & math ----------
 const DEST_ATL = { lat:33.7490, lon:-84.3880 };
 const DEST_HSV = { lat:34.7304, lon:-86.5861 };
+
 function toRad(v){ return v * Math.PI / 180; }
 function haversineKm(a,b,c,d){
   const R=6371, dLat=toRad(c-a), dLon=toRad(d-b);
@@ -160,7 +164,27 @@ function miles(rec, dest, road){
   return haversineKm(rec.lat, rec.lon, dest.lat, dest.lon) * 0.621371 * road;
 }
 
-// ---- parsing helpers ----
+// ---------- coordinate sanitizer ----------
+function sanitizeLatLon(latLike, lonLike) {
+  let lat = Number(latLike), lon = Number(lonLike);
+
+  // Detect swapped values and swap back
+  if ((Math.abs(lat) > 90 && Math.abs(lon) <= 180) ||
+      (Math.abs(lon) <= 90 && Math.abs(lat) > 90)) {
+    const t = lat; lat = lon; lon = t;
+  }
+
+  if (!isFinite(lat) || !isFinite(lon)) return { ok:false };
+  if (Math.abs(lat) > 90 || Math.abs(lon) > 180) return { ok:false };
+
+  // US longitudes should be negative
+  if (lat >= 18 && lat <= 72 && lon > 0 && lon <= 180) lon = -lon;
+
+  if (Math.abs(lat) > 90 || Math.abs(lon) > 180) return { ok:false };
+  return { ok:true, lat, lon };
+}
+
+// ---------- generic JSON parsing ----------
 function getRecords(data){
   if(Array.isArray(data)) return data;
   if(Array.isArray(data.records)) return data.records;
@@ -168,7 +192,7 @@ function getRecords(data){
   if(data.d && Array.isArray(data.d.results)) return data.d.results;
   if(Array.isArray(data.items)) return data.items;
   if(Array.isArray(data.features)){
-    // GeoJSON-ish
+    // GeoJSON-like
     return data.features.map(f=>({
       ...f.properties,
       lat: f.geometry && (f.geometry.coordinates[1] ?? f.geometry.coordinates.lat),
@@ -178,12 +202,20 @@ function getRecords(data){
   return [];
 }
 
+// normalize common shapes
 function norm(rec, idx){
   const id = rec.id ?? rec.ID ?? rec.pk ?? rec.Title ?? String(idx+1);
   const name = rec.name ?? rec.Name ?? rec.property ?? rec.Property ?? rec.Title ?? `Site ${idx+1}`;
-  const lat = Number(rec.lat ?? rec.latitude ?? rec.Latitude);
-  const lon = Number(rec.lon ?? rec.lng ?? rec.long ?? rec.longitude ?? rec.Longitude);
-  return { id, name, lat, lon,
+
+  const rawLat = rec.lat ?? rec.Lat ?? rec.latitude ?? rec.Latitude ?? rec.lat_dd ?? rec.latDeg;
+  const rawLon = rec.lon ?? rec.lng ?? rec.long ?? rec.Long ?? rec.longitude ?? rec.Longitude ?? rec.lon_dd ?? rec.lonDeg;
+
+  const fixed = sanitizeLatLon(rawLat, rawLon);
+
+  return {
+    id, name,
+    lat: fixed.ok ? fixed.lat : NaN,
+    lon: fixed.ok ? fixed.lon : NaN,
     city: rec.city ?? rec.City ?? "",
     state: rec.state ?? rec.State ?? "",
     rvp: rec.rvp ?? rec.RVP ?? "",
@@ -191,7 +223,51 @@ function norm(rec, idx){
   };
 }
 
-// ---- state ----
+// ---------- RVP page scraper ----------
+function extractMarkerDataArray(htmlText) {
+  const m = htmlText.match(/var\s+markerData\s*=\s*(\[[\s\S]*?\]);/);
+  if (!m) throw new Error("markerData not found in page");
+  const arrayLiteral = m[1];
+  const data = (new Function(`"use strict"; return (${arrayLiteral});`))();
+  if (!Array.isArray(data)) throw new Error("markerData is not an array");
+  return data;
+}
+
+function fromMarkerData(items) {
+  return items.map((it, idx) => {
+    // name = the <b> ... </b> in popup
+    let name = `Site ${idx+1}`;
+    const nm = String(it.popup||"").match(/<b>(.*?)<\/b>/i);
+    if (nm) name = nm[1];
+
+    // try to parse city/state from the "Address:" line (best-effort)
+    let city = "", state = "";
+    const addr = String(it.popup||"").split("Address:")[1] || "";
+    const line = addr.split("<br>")[0] || "";
+    const parts = line.split(",").map(s => s.trim());
+    if (parts.length >= 2) {
+      city = parts[parts.length-2];
+      const st = (parts[parts.length-1] || "").trim().split(/\s+/)[0] || "";
+      if (/^[A-Z]{2}$/.test(st)) state = st;
+    }
+
+    const fixed = sanitizeLatLon(it.lat, it.lng);
+
+    // Manager / RVP also live in the popup; easy to add later if wanted
+    return {
+      id: idx+1,
+      name,
+      lat: fixed.ok ? fixed.lat : NaN,
+      lon: fixed.ok ? fixed.lon : NaN,
+      city,
+      state,
+      rvp: "",
+      manager: "",
+    };
+  });
+}
+
+// ---------- app state ----------
 let records = [];
 let state = {}; // id -> {included:true, fly:false}
 function byId(id){ return document.getElementById(id); }
@@ -260,11 +336,11 @@ function render(){
   byId('empty').style.display = records.length? 'none':'block';
 }
 
-// ---- load handlers ----
+// ---------- loaders ----------
 async function loadFromUrl(url){
   const s = byId('status');
   try{
-    s.textContent = 'Status: fetching…';
+    s.textContent = 'Status: fetching JSON…';
     const r = await fetch(url, { cache:'no-store' });
     if(!r.ok){ s.textContent = `Status: HTTP ${r.status}`; return; }
     const data = await r.json();
@@ -277,14 +353,33 @@ async function loadFromUrl(url){
   }catch(e){ s.textContent = `Status: failed — ${e.message}`; }
 }
 
+async function loadFromRvpPage(pageUrl) {
+  const s = byId('status');
+  try {
+    s.textContent = 'Status: fetching RVP page…';
+    const r = await fetch(pageUrl, { cache: 'no-store' });
+    if (!r.ok) { s.textContent = `Status: HTTP ${r.status}`; return; }
+    const html = await r.text();
+    const markerItems = extractMarkerDataArray(html);
+    records = fromMarkerData(markerItems);
+    state = {};
+    s.textContent = `Status: loaded ${records.length} sites from RVP map`;
+    byId('debug').textContent = JSON.stringify(records.slice(0,5), null, 2);
+    render();
+  } catch (e) {
+    s.textContent = `Status: failed — ${e.message}`;
+  }
+}
+
+// ---------- events ----------
 byId('btnLoad').onclick = () => {
   const url = byId('urlInput').value.trim();
   if(url) loadFromUrl(url);
 };
-window.addEventListener('DOMContentLoaded', () => {
-  const pref = byId('urlInput').value.trim();
-  if (pref) loadFromUrl(pref);
-});
+byId('btnLoadRvp').onclick = () => {
+  const page = byId('urlInput').value.trim() || "https://d4branch.github.io/gateway-property-map/";
+  loadFromRvpPage(page);
+};
 
 byId('fileInput').onchange = (e) => {
   const f = e.target.files && e.target.files[0];
@@ -330,6 +425,12 @@ function markFar(threshold, dest){
   }
   render();
 }
+
+// Auto-load from RVP page on first open (you can remove this if you prefer manual)
+window.addEventListener('DOMContentLoaded', () => {
+  const pref = byId('urlInput').value.trim();
+  loadFromRvpPage(pref || "https://d4branch.github.io/gateway-property-map/");
+});
 </script>
 </body>
 </html>
